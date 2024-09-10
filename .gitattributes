@@ -1,0 +1,5 @@
+# Force Python as the main language
+*.sol linguist-language=Solidity
+
+# Mark HTML files as documentation, not code
+*.html linguist-documentation
